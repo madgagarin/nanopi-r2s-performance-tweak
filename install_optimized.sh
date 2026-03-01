@@ -12,7 +12,7 @@ echo "[0/6] Checking and installing required packages..."
 echo "Updating package lists..."
 opkg update
 
-PACKAGES="kmod-tcp-bbr kmod-sched kmod-sched-cake luci-app-sqm sqm-scripts"
+PACKAGES="kmod-tcp-bbr kmod-sched kmod-sched-cake luci-app-sqm sqm-scripts haveged"
 
 for PKG in $PACKAGES; do
     if opkg list-installed | grep -q "^$PKG"; then
@@ -57,20 +57,30 @@ net.ipv4.tcp_rmem = 4096 87380 16777216
 net.ipv4.tcp_wmem = 4096 16384 16777216
 net.core.netdev_max_backlog = 5000
 
-# 3. Flow Steering Global
+# 3. Connection & Memory Optimization
+net.ipv4.tcp_fastopen = 3
+vm.min_free_kbytes = 16384
+
+# 4. Flow Steering Global
 net.core.rps_sock_flow_entries = 32768
 EOF
 
 sysctl -p > /dev/null
 
 # ----------------------------------------------------------------
-# 2. FIREWALL (Disable Offloading)
+# 2. FIREWALL & NETWORK (Disable Offloading, Set Queues)
 # ----------------------------------------------------------------
-echo "[2/6] Disabling Offloading to fix SQM..."
+echo "[2/6] Configuring Network & Firewall..."
 uci set firewall.@defaults[0].flow_offloading='0'
 uci set firewall.@defaults[0].flow_offloading_hw='0'
 uci commit firewall
 /etc/init.d/firewall reload
+
+# Set TX Queue Length to 5000 permanently via UCI
+uci set network.wan.txqueuelen='5000'
+uci set network.lan.txqueuelen='5000'
+uci commit network
+/etc/init.d/network reload
 
 # ----------------------------------------------------------------
 # 3. SQM QoS (CAKE)
@@ -82,8 +92,23 @@ uci set sqm.eth0.qdisc='cake'
 uci set sqm.eth0.script='piece_of_cake.qos'
 uci set sqm.eth0.linklayer='none'
 # Defaulting to Download=0 (Auto/Unlimited), Upload=480Mbps
+# If your ISP speed is unstable, set these to 85-90% of your MINIMUM speed.
 uci set sqm.eth0.download='0'
 uci set sqm.eth0.upload='480000'
+
+# Advanced Tuning for Unstable/Floating ISP Speed:
+uci set sqm.eth0.qdisc_advanced='1'
+uci set sqm.eth0.squash_dscp='1'
+uci set sqm.eth0.squash_ingress='1'
+uci set sqm.eth0.ingress_update='1'
+uci set sqm.eth0.extra_params='ack-filter'
+
+# PRESETS FOR OVERHEAD (Select your ISP type):
+# 18: Pure Ethernet (Default)
+# 26: PPPoE
+# 44: VDSL / Older Cable
+uci set sqm.eth0.overhead='18'
+
 uci set sqm.eth0.enabled='1'
 uci commit sqm
 /etc/init.d/sqm enable
@@ -92,7 +117,12 @@ uci commit sqm
 # ----------------------------------------------------------------
 # 4. SYSTEM SERVICE (Init Script)
 # ----------------------------------------------------------------
-echo "[4/6] Installing System Service (IRQ, RPS, XPS, Governor)..."
+echo "[4/6] Installing System Service (IRQ, RPS, XPS, Governor, I/O)..."
+
+# Optimize system logging (RAM only, 512KB limit)
+uci set system.@system[0].log_size='512'
+uci commit system
+/etc/init.d/system restart
 
 cat << 'EOF' > /etc/init.d/r2s_optimize
 #!/bin/sh /etc/rc.common
@@ -100,8 +130,11 @@ cat << 'EOF' > /etc/init.d/r2s_optimize
 START=99
 
 start() {
+    # 0. I/O Optimization (Reduce SD Card wear)
+    mount -o remount,noatime /
+
     # Wait for interfaces to be fully up
-    sleep 15
+    sleep 10
 
     # 1. IRQ Affinity (Hard Pinning)
     IRQ_ETH0=$(awk -F: '/eth0/ {print $1}' /proc/interrupts | sed 's/ //g')
@@ -110,21 +143,29 @@ start() {
     [ -n "$IRQ_ETH0" ] && echo 2 > /proc/irq/$IRQ_ETH0/smp_affinity
     [ -n "$IRQ_USB" ] && echo 4 > /proc/irq/$IRQ_USB/smp_affinity
 
-    # 2. CPU Governor (Schedutil)
+    # 2. CPU Governor & Queues
     for cpu in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
         echo schedutil > $cpu
     done
+    ifconfig eth0 txqueuelen 5000
+    ifconfig eth1 txqueuelen 5000
 
     # 3. RPS (Receive Packet Steering)
-    echo 3 > /sys/class/net/eth0/queues/rx-0/rps_cpus
-    echo c > /sys/class/net/eth1/queues/rx-0/rps_cpus
+    echo f > /sys/class/net/eth0/queues/rx-0/rps_cpus
+    echo f > /sys/class/net/eth1/queues/rx-0/rps_cpus
 
     # 4. XPS (Transmit Packet Steering)
-    echo 3 > /sys/class/net/eth0/queues/tx-0/xps_cpus
+    echo f > /sys/class/net/eth0/queues/tx-0/xps_cpus
+    echo f > /sys/class/net/eth1/queues/tx-0/xps_cpus 2>/dev/null
 
     # 5. RFS (Receive Flow Steering)
-    echo 2048 > /sys/class/net/eth0/queues/rx-0/rps_flow_cnt
-    echo 2048 > /sys/class/net/eth1/queues/rx-0/rps_flow_cnt
+    echo 4096 > /sys/class/net/eth0/queues/rx-0/rps_flow_cnt
+    echo 4096 > /sys/class/net/eth1/queues/rx-0/rps_flow_cnt
+
+    # 6. TX Queue Length (after netifd)
+    sleep 5
+    ifconfig eth0 txqueuelen 5000
+    ifconfig eth1 txqueuelen 5000
 }
 EOF
 
@@ -169,13 +210,13 @@ if [ "$AFF_USB" = "4" ]; then printf "${GREEN}OK (CPU2)${NC}\n"; else printf "${
 RPS_ETH0=$(cat /sys/class/net/eth0/queues/rx-0/rps_cpus)
 RPS_ETH1=$(cat /sys/class/net/eth1/queues/rx-0/rps_cpus)
 printf "  %-20s " "RPS eth0 (WAN):"
-if [ "$RPS_ETH0" = "3" ]; then printf "${GREEN}OK (CPU0+1)${NC}\n"; else printf "${RED}FAIL ($RPS_ETH0)${NC}\n"; fi
+if [ "$RPS_ETH0" = "f" ]; then printf "${GREEN}OK (All Cores)${NC}\n"; else printf "${RED}FAIL ($RPS_ETH0)${NC}\n"; fi
 printf "  %-20s " "RPS eth1 (LAN):"
-if [ "$RPS_ETH1" = "c" ]; then printf "${GREEN}OK (CPU2+3)${NC}\n"; else printf "${RED}FAIL ($RPS_ETH1)${NC}\n"; fi
+if [ "$RPS_ETH1" = "f" ]; then printf "${GREEN}OK (All Cores)${NC}\n"; else printf "${RED}FAIL ($RPS_ETH1)${NC}\n"; fi
 
 XPS_ETH0=$(cat /sys/class/net/eth0/queues/tx-0/xps_cpus 2>/dev/null)
 printf "  %-20s " "XPS eth0 (WAN):"
-if [ "$XPS_ETH0" = "3" ]; then printf "${GREEN}OK (CPU0+1)${NC}\n"; else printf "${RED}FAIL ($XPS_ETH0)${NC}\n"; fi
+if [ "$XPS_ETH0" = "f" ]; then printf "${GREEN}OK (All Cores)${NC}\n"; else printf "${RED}FAIL ($XPS_ETH0)${NC}\n"; fi
 
 # 2. FLOW STEERING (RFS)
 echo ""
