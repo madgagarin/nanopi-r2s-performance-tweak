@@ -84,12 +84,15 @@ printf "  %-25s " "SQM Enabled:"
 if [ "$SQM_STATE" = "1" ]; then printf "${GREEN}OK${NC}\n"; else printf "${RED}FAIL${NC}\n"; fi
 printf "  %-25s " "SQM Overhead:"
 if [ "$SQM_OVERHEAD" = "18" ]; then printf "${GREEN}OK (Ethernet)${NC}\n"; else printf "${RED}INFO ($SQM_OVERHEAD)${NC}\n"; fi
-printf "  %-25s " "SQM Autorate (Ingress):"
+
 SQM_AUTORATE=$(uci get sqm.eth0.ingress_update 2>/dev/null)
+printf "  %-25s " "SQM Autorate (Ingress):"
 if [ "$SQM_AUTORATE" = "1" ]; then printf "${GREEN}OK (Active)${NC}\n"; else printf "${RED}FAIL${NC}\n"; fi
-printf "  %-25s " "SQM Ack-Filter:"
+
 SQM_ACK=$(uci get sqm.eth0.extra_params 2>/dev/null)
+printf "  %-25s " "SQM Ack-Filter:"
 if echo "$SQM_ACK" | grep -q "ack-filter"; then printf "${GREEN}OK (Active)${NC}\n"; else printf "${RED}FAIL${NC}\n"; fi
+
 printf "  %-25s " "Flow Offloading:"
 if [ "$FW_OFFLOAD" = "0" ]; then printf "${GREEN}OK (Disabled)${NC}\n"; else printf "${RED}FAIL (Conflict!)${NC}\n"; fi
 printf "  %-25s " "WAN Qdisc (SQM):"
@@ -100,9 +103,12 @@ echo ""
 echo "[5] Persistence & Backup"
 INIT_D="/etc/rc.d/*r2s_optimize"
 SYS_UPG="/etc/sysupgrade.conf"
+HOTPLUG="/etc/hotplug.d/iface/99-r2s-optimize"
 
 printf "  %-25s " "Auto-Start Script:"
 if ls $INIT_D >/dev/null 2>&1; then printf "${GREEN}OK${NC}\n"; else printf "${RED}FAIL${NC}\n"; fi
+printf "  %-25s " "Hotplug Persistence:"
+if [ -f "$HOTPLUG" ]; then printf "${GREEN}OK${NC}\n"; else printf "${RED}FAIL${NC}\n"; fi
 printf "  %-25s " "Backup (Service):"
 if grep -q "init.d/r2s_optimize" "$SYS_UPG"; then printf "${GREEN}OK${NC}\n"; else printf "${RED}FAIL${NC}\n"; fi
 

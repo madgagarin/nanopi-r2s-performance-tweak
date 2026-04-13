@@ -12,6 +12,7 @@ This script applies an advanced optimization stack:
 1.  **CPU Load Balancing (IRQ/RPS + XPS):** 
     *   Distributes **Incoming (RPS)** AND **Outgoing (XPS)** traffic across **ALL 4 cores** (Mask: `f`).
     *   Pins Hardware Interrupts (IRQ) to dedicated cores (Eth0->CPU1, Eth1->CPU2) to prevent locking.
+    *   **Hotplug Persistence:** Automatically re-applies settings when interfaces go up/down (prevents "settings drop" after network restart).
 2.  **Flow Steering (RFS):** Enables global Receive Flow Steering (32k entries) to route packets to the CPU core processing the application.
 3.  **Adaptive SQM CAKE (Bufferbloat Killer):** 
     *   Automatically configures **CAKE** with **Ack-Filtering** and **Autorate Ingress** to handle floating/unstable ISP speeds.
