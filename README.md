@@ -21,11 +21,12 @@ This script applies an advanced optimization stack:
     *   **BBR + FQ:** Enables Google's BBR congestion control.
     *   **TCP Fast Open (TFO):** Speeds up handshake for faster web browsing.
     *   **Entropy (haveged):** Speeds up SSL/TLS handshakes and VPN.
-5.  **Reliability & SD-Card Protection:** 
+5.  **Reliability & Self-Healing:** 
+    *   **Auto-Recovery:** Automatically restores all installed packages after a firmware upgrade or backup restoration.
     *   **noatime:** Disables access time writes to reduce SD card wear.
     *   **RAM Logging:** Limits system logs to 512KB in RAM to prevent disk I/O spikes.
     *   **Memory Guard:** Reserves 16MB for kernel networking to prevent stalls under load.
-6.  **Queue Tuning:** Sets `txqueuelen` to 5000 for both interfaces to handle 500Mbps+ bursts without packet loss.
+6.  **Queue Tuning:** Sets `txqueuelen` to 10000 for both interfaces to handle bursts without packet loss.
 
 ### Installation
 
@@ -48,11 +49,11 @@ Run the included check script to see the status of all optimizations:
 
 **Expected Output:**
 ```text
-[1] CPU Load Balancing (IRQ/RPS/XPS) -> OK (All Cores)
-[2] Flow Steering & Queues          -> OK (TXQ: 5000)
+[1] CPU Load Balancing (IRQ/RPS/XPS) -> OK (Optimized)
+[2] Flow Steering & Queues          -> OK (TXQ: 10000)
 [3] TCP & System Tuning             -> OK (BBR, TFO, 16MB)
-[4] SQM & Firewall                  -> OK (CAKE, Autorate, Ack-Filter)
-[5] Persistence & Backup            -> OK
+[4] SQM & Firewall                  -> OK (CAKE, 360/360 Mbps)
+[5] Persistence & Backup            -> OK (Hotplug Active)
 [6] SD Card & Logs Optimization     -> OK (noatime, 512K)
 ```
 

@@ -35,9 +35,9 @@ RPS_ETH1=$(cat /sys/class/net/eth1/queues/rx-0/rps_cpus)
 XPS_ETH0=$(cat /sys/class/net/eth0/queues/tx-0/xps_cpus 2>/dev/null)
 
 printf "  %-25s " "RPS eth0 (WAN):"
-if [ "$RPS_ETH0" = "f" ]; then printf "${GREEN}OK (All Cores)${NC}\n"; else printf "${RED}FAIL ($RPS_ETH0)${NC}\n"; fi
+if [ "$RPS_ETH0" = "d" ]; then printf "${GREEN}OK (Optimized)${NC}\n"; else printf "${RED}FAIL ($RPS_ETH0)${NC}\n"; fi
 printf "  %-25s " "RPS eth1 (LAN):"
-if [ "$RPS_ETH1" = "f" ]; then printf "${GREEN}OK (All Cores)${NC}\n"; else printf "${RED}FAIL ($RPS_ETH1)${NC}\n"; fi
+if [ "$RPS_ETH1" = "b" ]; then printf "${GREEN}OK (Optimized)${NC}\n"; else printf "${RED}FAIL ($RPS_ETH1)${NC}\n"; fi
 printf "  %-25s " "XPS eth0 (WAN):"
 if [ "$XPS_ETH0" = "f" ]; then printf "${GREEN}OK (All Cores)${NC}\n"; else printf "${RED}FAIL ($XPS_ETH0)${NC}\n"; fi
 
@@ -49,11 +49,11 @@ RFS_CNT=$(cat /sys/class/net/eth0/queues/rx-0/rps_flow_cnt)
 TXQ_ETH0=$(cat /sys/class/net/eth0/tx_queue_len)
 
 printf "  %-25s " "Global RFS Entries:"
-if [ "$RFS_ENTRIES" = "32768" ]; then printf "${GREEN}OK${NC}\n"; else printf "${RED}FAIL${NC}\n"; fi
+if [ "$RFS_ENTRIES" = "32768" ]; then printf "${GREEN}OK${NC}\n"; else printf "${RED}FAIL ($RFS_ENTRIES)${NC}\n"; fi
 printf "  %-25s " "Queue Flow Count:"
-if [ "$RFS_CNT" = "4096" ]; then printf "${GREEN}OK${NC}\n"; else printf "${RED}FAIL${NC}\n"; fi
+if [ "$RFS_CNT" = "16384" ]; then printf "${GREEN}OK${NC}\n"; else printf "${RED}FAIL ($RFS_CNT)${NC}\n"; fi
 printf "  %-25s " "TX Queue Length:"
-if [ "$TXQ_ETH0" = "5000" ]; then printf "${GREEN}OK (5000)${NC}\n"; else printf "${RED}FAIL ($TXQ_ETH0)${NC}\n"; fi
+if [ "$TXQ_ETH0" = "10000" ]; then printf "${GREEN}OK (10000)${NC}\n"; else printf "${RED}FAIL ($TXQ_ETH0)${NC}\n"; fi
 
 # 3. TCP & SYSTEM TUNING
 echo ""

@@ -12,7 +12,7 @@ echo "[0/6] Checking and installing required packages..."
 echo "Updating package lists..."
 opkg update
 
-PACKAGES="kmod-tcp-bbr kmod-sched kmod-sched-cake luci-app-sqm sqm-scripts haveged"
+PACKAGES="kmod-tcp-bbr kmod-sched kmod-sched-cake luci-app-sqm sqm-scripts haveged ethtool"
 
 for PKG in $PACKAGES; do
     if opkg list-installed | grep -q "^$PKG"; then
@@ -55,14 +55,16 @@ net.core.rmem_max = 16777216
 net.core.wmem_max = 16777216
 net.ipv4.tcp_rmem = 4096 87380 16777216
 net.ipv4.tcp_wmem = 4096 16384 16777216
-net.core.netdev_max_backlog = 5000
+net.core.netdev_max_backlog = 10000
+net.core.netdev_budget = 600
+net.core.netdev_budget_usecs = 8000
 
 # 3. Connection & Memory Optimization
 net.ipv4.tcp_fastopen = 3
 vm.min_free_kbytes = 16384
 
 # 4. Flow Steering Global
-net.core.rps_sock_flow_entries = 32768
+# No global entries here to avoid sysctl errors, we set them in the init script
 EOF
 
 sysctl -p > /dev/null
@@ -76,9 +78,9 @@ uci set firewall.@defaults[0].flow_offloading_hw='0'
 uci commit firewall
 /etc/init.d/firewall reload
 
-# Set TX Queue Length to 5000 permanently via UCI
-uci set network.wan.txqueuelen='5000'
-uci set network.lan.txqueuelen='5000'
+# Set TX Queue Length to 10000 permanently via UCI
+uci set network.wan.txqueuelen='10000'
+uci set network.lan.txqueuelen='10000'
 uci commit network
 /etc/init.d/network reload
 
@@ -86,6 +88,7 @@ uci commit network
 # 3. SQM QoS (CAKE)
 # ----------------------------------------------------------------
 echo "[3/6] Configuring SQM (CAKE)..."
+# ... (rest of SQM logic remains same)
 uci set sqm.eth0=queue
 uci set sqm.eth0.interface='eth0'
 uci set sqm.eth0.qdisc='cake'
@@ -93,8 +96,8 @@ uci set sqm.eth0.script='piece_of_cake.qos'
 uci set sqm.eth0.linklayer='none'
 # Defaulting to Download=0 (Auto/Unlimited), Upload=480Mbps
 # If your ISP speed is unstable, set these to 85-90% of your MINIMUM speed.
-uci set sqm.eth0.download='0'
-uci set sqm.eth0.upload='480000'
+uci set sqm.eth0.download='360000'
+uci set sqm.eth0.upload='360000'
 
 # Advanced Tuning for Unstable/Floating ISP Speed:
 uci set sqm.eth0.qdisc_advanced='1'
@@ -130,6 +133,9 @@ cat << 'EOF' > /etc/init.d/r2s_optimize
 START=99
 
 apply_net_optim() {
+    # 0. Global RFS (Receive Flow Steering)
+    echo 32768 > /proc/sys/net/core/rps_sock_flow_entries
+
     # 1. IRQ Affinity (Hard Pinning)
     # R2S RK3328: eth0 (internal) to CPU1, eth1 (USB) to CPU2
     IRQ_ETH0=$(awk -F: '/eth0/ {print $1}' /proc/interrupts | sed 's/ //g')
@@ -139,20 +145,28 @@ apply_net_optim() {
     [ -n "$IRQ_USB" ] && echo 4 > /proc/irq/$IRQ_USB/smp_affinity
 
     # 2. RPS (Receive Packet Steering) & RFS (Receive Flow Steering)
-    # Distribute traffic across all 4 cores (f)
-    for q in /sys/class/net/eth*/queues/rx-*; do
-        [ -e "$q/rps_cpus" ] && echo f > "$q/rps_cpus"
-        [ -e "$q/rps_flow_cnt" ] && echo 4096 > "$q/rps_flow_cnt"
-    done
+    # eth0 (WAN) RPS mask d, eth1 (LAN) RPS mask b
+    if [ -e "/sys/class/net/eth0" ]; then
+        echo d > /sys/class/net/eth0/queues/rx-0/rps_cpus
+        echo 16384 > /sys/class/net/eth0/queues/rx-0/rps_flow_cnt
+    fi
+    if [ -e "/sys/class/net/eth1" ]; then
+        echo b > /sys/class/net/eth1/queues/rx-0/rps_cpus
+        echo 16384 > /sys/class/net/eth1/queues/rx-0/rps_flow_cnt
+    fi
 
     # 3. XPS (Transmit Packet Steering)
     for q in /sys/class/net/eth*/queues/tx-*; do
         [ -e "$q/xps_cpus" ] && echo f > "$q/xps_cpus"
     done
 
-    # 4. TX Queue Length
+    # 4. Hardware Tuning (ethtool)
     for dev in eth0 eth1; do
-        ifconfig $dev txqueuelen 5000 2>/dev/null
+        if [ -e "/sys/class/net/$dev" ]; then
+            ifconfig $dev txqueuelen 10000 2>/dev/null
+            ethtool -G $dev rx 1024 tx 1024 2>/dev/null
+            ethtool -C $dev rx-usecs 30 tx-usecs 30 2>/dev/null
+        fi
     done
 }
 
@@ -165,12 +179,12 @@ start() {
         echo schedutil > $cpu
     done
 
-    # Wait for interfaces and apply initial optimization
+    # 2. Apply Network Optimization in stages to ensure it sticks
     (
-        sleep 10
-        apply_net_optim
-        sleep 20
-        apply_net_optim
+        for delay in 10 30 60; do
+            sleep $delay
+            apply_net_optim
+        done
     ) &
 }
 EOF
@@ -226,9 +240,9 @@ RPS_ETH1=$(cat /sys/class/net/eth1/queues/rx-0/rps_cpus)
 XPS_ETH0=$(cat /sys/class/net/eth0/queues/tx-0/xps_cpus 2>/dev/null)
 
 printf "  %-25s " "RPS eth0 (WAN):"
-if [ "$RPS_ETH0" = "f" ]; then printf "${GREEN}OK (All Cores)${NC}\n"; else printf "${RED}FAIL ($RPS_ETH0)${NC}\n"; fi
+if [ "$RPS_ETH0" = "d" ]; then printf "${GREEN}OK (Optimized)${NC}\n"; else printf "${RED}FAIL ($RPS_ETH0)${NC}\n"; fi
 printf "  %-25s " "RPS eth1 (LAN):"
-if [ "$RPS_ETH1" = "f" ]; then printf "${GREEN}OK (All Cores)${NC}\n"; else printf "${RED}FAIL ($RPS_ETH1)${NC}\n"; fi
+if [ "$RPS_ETH1" = "b" ]; then printf "${GREEN}OK (Optimized)${NC}\n"; else printf "${RED}FAIL ($RPS_ETH1)${NC}\n"; fi
 printf "  %-25s " "XPS eth0 (WAN):"
 if [ "$XPS_ETH0" = "f" ]; then printf "${GREEN}OK (All Cores)${NC}\n"; else printf "${RED}FAIL ($XPS_ETH0)${NC}\n"; fi
 
@@ -240,11 +254,11 @@ RFS_CNT=$(cat /sys/class/net/eth0/queues/rx-0/rps_flow_cnt)
 TXQ_ETH0=$(cat /sys/class/net/eth0/tx_queue_len)
 
 printf "  %-25s " "Global RFS Entries:"
-if [ "$RFS_ENTRIES" = "32768" ]; then printf "${GREEN}OK${NC}\n"; else printf "${RED}FAIL${NC}\n"; fi
+if [ "$RFS_ENTRIES" = "32768" ]; then printf "${GREEN}OK${NC}\n"; else printf "${RED}FAIL ($RFS_ENTRIES)${NC}\n"; fi
 printf "  %-25s " "Queue Flow Count:"
-if [ "$RFS_CNT" = "4096" ]; then printf "${GREEN}OK${NC}\n"; else printf "${RED}FAIL${NC}\n"; fi
+if [ "$RFS_CNT" = "16384" ]; then printf "${GREEN}OK${NC}\n"; else printf "${RED}FAIL ($RFS_CNT)${NC}\n"; fi
 printf "  %-25s " "TX Queue Length:"
-if [ "$TXQ_ETH0" = "5000" ]; then printf "${GREEN}OK (5000)${NC}\n"; else printf "${RED}FAIL ($TXQ_ETH0)${NC}\n"; fi
+if [ "$TXQ_ETH0" = "10000" ]; then printf "${GREEN}OK (10000)${NC}\n"; else printf "${RED}FAIL ($TXQ_ETH0)${NC}\n"; fi
 
 # 3. TCP & SYSTEM TUNING
 echo ""
@@ -319,23 +333,76 @@ EOF
 chmod +x /root/check_full_optimization.sh
 
 # ----------------------------------------------------------------
-# 6. PERSISTENCE (Backup)
+# 6. PERSISTENCE (Backup & Recovery)
 # ----------------------------------------------------------------
 echo "[6/6] Configuring Backup Persistence..."
 
-# 1. Create uci-defaults script for auto-enable after upgrade
+# 1. Create package backup script
+cat << 'EOF' > /usr/bin/save-package-list
+#!/bin/sh
+mkdir -p /etc/backup
+TARGET_FILE='/etc/backup/installed_packages.txt'
+TEMP_FILE='/tmp/current_packages.txt'
+
+# Get installed packages list
+opkg list-installed | awk '{print $1}' | sort > "$TEMP_FILE"
+
+# Save if changed
+if [ ! -f "$TARGET_FILE" ] || ! cmp -s "$TEMP_FILE" "$TARGET_FILE"; then
+    mv "$TEMP_FILE" "$TARGET_FILE"
+    logger -t backup_packages 'Package list updated for backup.'
+fi
+EOF
+chmod +x /usr/bin/save-package-list
+
+# 2. Create package restore script
+cat << 'EOF' > /usr/bin/restore-packages
+#!/bin/sh
+LIST='/etc/backup/installed_packages.txt'
+if [ ! -f "$LIST" ]; then
+    logger -t restore_packages 'No package list found in /etc/backup/'
+    exit 0
+fi
+
+logger -t restore_packages 'Starting automatic package restoration...'
+opkg update
+
+for pkg in $(cat "$LIST"); do
+    if ! opkg list-installed | grep -q "^$pkg "; then
+        logger -t restore_packages "Installing missing package: $pkg"
+        opkg install "$pkg"
+    fi
+done
+logger -t restore_packages 'Package restoration complete.'
+EOF
+chmod +x /usr/bin/restore-packages
+
+# 3. Create uci-defaults script for auto-recovery after upgrade
 cat << 'EOF' > /etc/uci-defaults/99-r2s-optimize
+#!/bin/sh
+# This runs once after firmware upgrade or backup restore
+
+# Restore packages first
+if [ -x /usr/bin/restore-packages ]; then
+    /usr/bin/restore-packages
+fi
+
+# Enable and start the optimization service
 /etc/init.d/r2s_optimize enable
 /etc/init.d/r2s_optimize start
+
 exit 0
 EOF
 chmod +x /etc/uci-defaults/99-r2s-optimize
 
-# 2. Add files to sysupgrade.conf
-for FILE in /etc/init.d/r2s_optimize /etc/hotplug.d/iface/99-r2s-optimize /etc/uci-defaults/99-r2s-optimize; do
+# 4. Add critical files to sysupgrade.conf
+for FILE in /etc/init.d/r2s_optimize /etc/hotplug.d/iface/99-r2s-optimize /etc/uci-defaults/99-r2s-optimize /etc/backup/installed_packages.txt /usr/bin/save-package-list /usr/bin/restore-packages; do
     if ! grep -q "$FILE" /etc/sysupgrade.conf; then
         echo "$FILE" >> /etc/sysupgrade.conf
     fi
 done
+
+# 5. Initial save of package list
+/usr/bin/save-package-list
 
 echo "Optimization Complete!"
